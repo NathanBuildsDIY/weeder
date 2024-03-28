@@ -1,0 +1,17 @@
+<title>Weeder Control</title>
+<html>
+  <body>
+    <form method="post">
+      <p>Test Type:</p>
+      <p>{{ form.hidden_tag() }}</p>
+      <p>{{ form.runType }}</p>
+      <p>Weed Type to kill (Normal Operation only):</p>
+      <p>{{ form.weedType }}</p>
+      <p>Distance To Travel (in ft):</p>
+      <p>{{ form.distance }}</p>
+      <p>Number of Rows to Travel (each row approx 1 ft apart):</p>
+      <p>{{ form.rows }}</p>
+      <input type="submit">
+    </form>
+  </body>
+</html>
