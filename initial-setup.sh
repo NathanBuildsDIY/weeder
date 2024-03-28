@@ -50,5 +50,4 @@ pip3 install flask_autoindex
 pip3 install psutil
 
 echo "restarting for changes to take effect. Still must run wifi setup"
-sleep 200
 sudo shutdown -r now
