@@ -8,19 +8,8 @@ To set up your raspberry pi zero 2 w
 4. clone this git repository to your pi home directory: git clone https://github.com/NathanBuildsDIY/weeder
 5. Run initial setup: nohup sh weeder/initial-setup.sh &
   Note - you can watch the output with: tail -f nohup.out
-6. Connect to the new wifi hostpot called weeder.  Visit http://weeder.local/run to control your weeding robot.
+6. Connect to the new wifi hostpot called weeder.  Visit http://weeder.local:5000/run to control your weeding robot.
+  view logs of runs at http://weeder.local:5000
 
 Sometimes the network changes fail to complete.  If that happens, log back in and manually execute:
-sudo iptables -t nat -I PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 5000
-sudo iptables -t nat -I OUTPUT -p tcp -o lo --dport 443 -j REDIRECT --to-ports 5000
-sudo iptables -t nat -I PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 5000
-sudo iptables -t nat -I OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 5000
-sudo iptables-save
-sudo sh -c '/sbin/iptables-save > /etc/iptables/rules'
-sudo systemctl stop dhcpcd
-sudo systemctl disable dhcpcd
-sudo systemctl enable NetworkManager 
-sudo service NetworkManager start
-sudo nmcli device wifi hotspot ssid weeder password LetsWeed ifname wlan0
-UUID=$(nmcli connection | grep Hotspot | tr -s ' ' | cut -d ' ' -f 2)
-sudo nmcli connection modify $UUID connection.autoconnect yes connection.autoconnect-priority 100
+nohup sh weeder/wifi-setup.sh &
