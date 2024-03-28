@@ -23,12 +23,13 @@ pip3 install pigpio
 sudo systemctl enable pigpiod #makes it run at startup (after reboot - sudo shutdown -r now. Check with pigs t)
 
 echo "set up iptables and rules"
-sudo apt-get -y install iptables
+sudo apt-get -y install iptables-persistent
 sudo iptables -t nat -I PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 5000
 sudo iptables -t nat -I OUTPUT -p tcp -o lo --dport 443 -j REDIRECT --to-ports 5000
 sudo iptables -t nat -I PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 5000
 sudo iptables -t nat -I OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 5000
 sudo iptables-save
+/sbin/iptables-save > /etc/iptables/rules
 
 echo "set up dnsmask to do dns resolution on our wifi hotspot"
 sudo apt-get -y install dnsmasq
