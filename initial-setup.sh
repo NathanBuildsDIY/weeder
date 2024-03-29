@@ -42,26 +42,17 @@ pip3 install flask_autoindex
 pip3 install psutil
 
 echo "set up iptables and rules"
-# sudo apt-get -y install iptables-persistent # do this beforehand - interactive
-sudo iptables -t nat -I PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 5000
-sudo iptables -t nat -I OUTPUT -p tcp -o lo --dport 443 -j REDIRECT --to-ports 5000
-sudo iptables -t nat -I PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 5000
-sudo iptables -t nat -I OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 5000
-sudo iptables-save
-sudo sh -c '/sbin/iptables-save > /etc/iptables/rules'
+line="@reboot /usr/bin/sh /home/$(whoami)/weeder/iptables.rules"
+sudo sh -c "(crontab -l; echo $line) | sort - | uniq | crontab -"
 
 echo "setup local wifi hotspot"
 sudo systemctl stop dhcpcd
 sudo systemctl disable dhcpcd
 sudo systemctl enable NetworkManager 
 sudo service NetworkManager start
-sudo nmcli device wifi hotspot ssid weeder password LetsWeed ifname wlan0
-  #note - to disable, sudo nmcli device disconnect wlan0
-  #After disabling the network, run the following command to reconnect to another Wi-Fi network: sudo nmcli device up wlan0
-#once enabled, we need to make it priority so it always runs on startup
-UUID=$(nmcli connection | grep Hotspot | tr -s ' ' | cut -d ' ' -f 2)
-#nmcli connection show $UUID
-sudo nmcli connection modify $UUID connection.autoconnect yes connection.autoconnect-priority 100
+#sudo nmcli device wifi hotspot ssid weeder password LetsWeed ifname wlan0
+#UUID=$(nmcli connection | grep Hotspot | tr -s ' ' | cut -d ' ' -f 2)
+#sudo nmcli connection modify $UUID connection.autoconnect yes connection.autoconnect-priority 100
 
-echo "restarting for changes to take effect. Still must run wifi setup"
-sudo shutdown -r now
+#echo "restarting for changes to take effect. Still must run wifi setup"
+#sudo shutdown -r now
