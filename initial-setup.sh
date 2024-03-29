@@ -50,9 +50,10 @@ sudo systemctl stop dhcpcd
 sudo systemctl disable dhcpcd
 sudo systemctl enable NetworkManager 
 sudo service NetworkManager start
-#sudo nmcli device wifi hotspot ssid weeder password LetsWeed ifname wlan0
-#UUID=$(nmcli connection | grep Hotspot | tr -s ' ' | cut -d ' ' -f 2)
-#sudo nmcli connection modify $UUID connection.autoconnect yes connection.autoconnect-priority 100
+sleep 20
+sudo nmcli device wifi hotspot ssid weeder password LetsWeed ifname wlan0
+UUID=$(nmcli connection | grep Hotspot | tr -s ' ' | cut -d ' ' -f 2)
+sudo nmcli connection modify $UUID connection.autoconnect yes connection.autoconnect-priority 100
 
-#echo "restarting for changes to take effect. Still must run wifi setup"
-#sudo shutdown -r now
+echo "restarting for changes to take effect. Still must run wifi setup"
+sudo shutdown -r now
