@@ -31,7 +31,7 @@ sudo apt-get -y install dnsutils
 echo 'address=/.local/10.42.0.1' | sudo tee -a /etc/NetworkManager/dnsmasq-shared.d/hosts.conf
 
 echo "create entry in crontab to always run weeder app on startup"
-line="@reboot python3 -m flask --app ~/weeder/WeedKiller_v6.py run --host=0.0.0.0"
+line="@reboot python3 -m flask --app ~/weeder/WeedKiller_v6.py run --host=0.0.0.0 >> ~/weeder/log/log.out"
 (crontab -u $(whoami) -l; echo "$line" ) | crontab -u $(whoami) -
 
 echo "Install flask and associated forms packages"
