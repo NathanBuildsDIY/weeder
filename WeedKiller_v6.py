@@ -1,12 +1,8 @@
 # Run on startup command in crontab
 # @reboot python3 /home/nanu/Desktop/weeder/WeedKiller_v4.py > /home/nanu/Desktop/weeder/$(date +"%m_%d_%I_%M_%S_%p").out 2>&1
-#TO DO: Check the selected cropped images to analyze are really the center of the sun targeting array
-#TO DO: Test/improve move to weed
-#TO DO: Know actual zaxis height. Raise/lower based on initial tilt/roll from suntracker to get things close before zaxis moves
-#       Somehow ignore bright areas outside the shadow of the lens.  
-#TO DO: redo script to adjust what qualifies as a "weed" via command line
-#TO DO: improve image classification. normalize images - divide by std deviation. Scale - 0 to 1 value. Need to do in image classification too?
-#TO DO: speed up - less writing to disk. Less time.sleep function call
+#TO DO: add manual adjust of motors via website
+#TO DO: read in metadata to create list of weeds. Make model have real names in it.
+#TO DO: taller stack/screws. 
 #Note: images are upside down (if standing behind robot)
 #Note: camera width at 200mm height, flat is 225mm across.  180 top to bottom. 1600x1200. Divide into 0-6 (width), 0-4 (height). Center is actually 50/50 (3 width, 2 height)
 #Note: When swing 0 = right or 180 = left (when standing behind robot) the 50% target in Y direction changes becasue of rotation of lens on swing. 
@@ -16,20 +12,25 @@
 # import the necessary packages
 #import argparse
 #parser = argparse.ArgumentParser()
-#parser.add_argument("--mode", help="Operational mode. Choose test-<motor>, test-full, photo, capture, run",
-#                    type=str, choices=["test-swing","test-tilt","test-roll","test-lid","test-zaxis","test-wheel","test-suntracker","test-full","photo","capture","run"], default="run")
-#parser.add_argument("--length", help="Distance in feet for weeder to travel forwad and back (int). Only used in capture and run modes. Default 50",
+#parser.add_argument("--mode", nargs="?", help="Operational mode. Choose test-<motor>, test-full, photo, capture, orient, run",
+#                    type=str, choices=["test-swing","test-tilt","test-roll","test-lid","test-zaxis","test-wheel","test-suntracker","test-full","orient","photo","capture","run"], default="run")
+#parser.add_argument("--length", nargs="?", help="Distance in feet for weeder to travel forwad and back (int). Only used in capture and run modes. Default 50",
 #                    type=int, default="50")
-#parser.add_argument("--width", help="Distance in feet for weeder to travel from side to side (int). Only used in capture and run modes. Default, 2",
+#parser.add_argument("--width", nargs="?", help="Distance in feet for weeder to travel from side to side (int). Only used in capture and run modes. Default, 2",
 #                    type=int, default="1")
-#parser.add_argument("--weeds", help="Comma separated list of weeds to check for and kill",
+#parser.add_argument("--weeds", nargs="?", help="Comma separated list of weeds to check for and kill",
 #                    type=str, choices=['l','c','l,c'], default="l,c")
+#parser.add_argument("--flask", nargs="?", help="Decide if flask mode (no input) or cmd line run (set to cmd)",
+#                    type=str, choices=['flask','cmd'], default="flask")
+#parser.add_argument("--app", nargs="?", help="used for flask", type=str)
+#parser.add_argument("--host", nargs="?", help="used for flask", type=str)
 #args = parser.parse_args()
-#print("Weeder will operate in mode: ", args.mode)
-#print("Weeder will travel foward/backward (in ft): ", args.length)
-#print("Weeder will move sideways (in ft, each pass covers width of 1 ft, so this is also # of passes): ",args.width)
-#weedArray=args.weeds.split(",")
-#print("List of weeds to kill is: ",str(weedArray))
+#if(args.flask == "cmd"):
+#  print("Weeder will operate in mode: ", args.mode)
+#  print("Weeder will travel foward/backward (in ft): ", args.length)
+#  print("Weeder will move sideways (in ft, each pass covers width of 1 ft, so this is also # of passes): ",args.width)
+#  weedArray=args.weeds.split(",")
+#  print("List of weeds to kill is: ",str(weedArray))
 import numpy as np
 import math
 from tflite_support.task import core
@@ -62,10 +63,10 @@ zaxis = PhaseEnableRobot(left=(18, 23), right=(16,12))  #forward = up, backwards
 #pigpiod startup command was here but now should already be running, part of startup
 factory = PiGPIOFactory()
 #define servos
-lid = AngularServo(10, initial_angle=180, min_angle=0, max_angle=180, min_pulse_width=14/10000, max_pulse_width=28/10000,pin_factory=factory)
+lid = AngularServo(10, initial_angle=180, min_angle=0, max_angle=180, min_pulse_width=12/10000, max_pulse_width=28/10000,pin_factory=factory)
   #note we actually control the min/max with the pulse widths. The angles listed are just for our convenience.
   #0 is fully rotated clockwise, 270 is counterclockwise, max/min seems to be 4/10000 and 28/10000
-tilt = AngularServo(22, initial_angle=110, min_angle=0, max_angle=180, min_pulse_width=9/10000, max_pulse_width=28/10000,pin_factory=factory) #180 is up, 0 is down
+tilt = AngularServo(22, initial_angle=110, min_angle=0, max_angle=180, min_pulse_width=5/10000, max_pulse_width=28/10000,pin_factory=factory) #180 is up, 0 is down
 roll = AngularServo(27, initial_angle=90, min_angle=0, max_angle=180, min_pulse_width=9/10000, max_pulse_width=14/10000,pin_factory=factory) #180 is right, 0 is left
 swing = AngularServo(9, initial_angle=90, min_angle=0, max_angle=180, min_pulse_width=12/10000, max_pulse_width=17/10000,pin_factory=factory) #0 right. 180 left
 #define variables to track current value of servos
@@ -131,13 +132,15 @@ classifier = vision.ImageClassifier.create_from_options(options)
 def takePhoto(prepend):
   time.sleep(.5) #let things settle before we snap a photo. hopefully we get clearer images this way
   #snapshot from camera and save. assumes we're already in correct directory
-  date = datetime.now().strftime("%m_%d_%I_%M_%S_%p_%f") #note: keep it short and don't allow : in filename - error
+  date = datetime.now().strftime("%m_%d_%I_%M_%S_%p_") #note: keep it short and don't allow : in filename - error
+  ident = datetime.now().strftime("%f")
+  date=date+ident
   photo_name = prepend + "_" + date + ".jpg"
   picam.capture_file(photo_name)
   image = cv2.imread(photo_name) #pull up image and get shape
   camheight = image.shape[0]
   camwidth = image.shape[1]
-  return photo_name,image,camheight,camwidth
+  return photo_name,image,camheight,camwidth,ident
 def moveMotor(motor,currentAngle,targetAngle):
   #move servos gradually to avoid jerking the robot to pieces
   minorAdjust=0
@@ -145,16 +148,17 @@ def moveMotor(motor,currentAngle,targetAngle):
     minorAdjust=1
   else:
     minorAdjust=-1
-  while abs(targetAngle-currentAngle)>0 and 0<=currentAngle<=180:
+  while abs(targetAngle-currentAngle)>0 and 0<=currentAngle+minorAdjust<=180:
     currentAngle=currentAngle+minorAdjust
     motor.angle=currentAngle
     time.sleep(0.02)
-  if 180 < currentAngle or currentAngle < 0:
-    print("motor must move between 0 and 180, trying to move to:, ",targetAngle," failed.")
   return currentAngle
-def sunTracker(tiltVal,rollVal):
+def sunTracker():
   sunTracker=0
-  while sunTracker==0:
+  global tiltVal, swingVal, lidVal, rollVal, swing, tilt, roll, lid
+  sunTrackerAttempts=0
+  while sunTracker==0 and sunTrackerAttempts < 50:
+    sunTrackerAttempts = sunTrackerAttempts + 1
     viz1=1 if quad1.is_pressed else 0
     viz2=1 if quad2.is_pressed else 0
     viz3=1 if quad3.is_pressed else 0
@@ -190,7 +194,7 @@ def sunTracker(tiltVal,rollVal):
       rollVal=moveMotor(roll,rollVal,rollVal+10)
     if viz1+viz2+viz3+viz4>3:
       print("quadrant summary, viz1: ",viz1," viz2: ",viz2," viz3: ",viz3," viz4: ",viz4)
-      print("close enough, stopping")
+      print("close enough, stopping",flush=True)
       sunTracker=1
     if viz1+viz2+viz3+viz4<1:
       print("not enough sun, taking a quick break")
@@ -199,7 +203,8 @@ def sunTracker(tiltVal,rollVal):
     print("  ",viz2," | ",viz3)
     print("----------")
     print("  ",viz1," | ",viz4)
-    print("")
+    print("roll: ",rollVal," tilt: ",tiltVal," swing: ",swingVal)
+    print("",flush=True)
   #we're now facing teh sun. Give it an extra 10 degrees.  The tracking photoresistors tend to turn on just a bit before we're really facing the sun
   if tiltVal > 90:
     tiltVal=moveMotor(tilt,tiltVal,tiltVal+10)
@@ -209,7 +214,8 @@ def sunTracker(tiltVal,rollVal):
     rollVal=moveMotor(roll,rollVal,rollVal+10)
   if rollVal < 90:
     rollVal=moveMotor(roll,rollVal,rollVal-10)
-  return tiltVal,rollVal
+  print("roll: ",rollVal," tilt: ",tiltVal," swing: ",swingVal)
+  return sunTracker
 def drawimage(c,cX,cY,text,image):
   #add text and contour to image
   cv2.drawContours(image, [c], -1, (0, 255, 0), 2)
@@ -263,10 +269,11 @@ def categorizeImage(crop_image,crop_name):
   #write out the marked up, classified image to filesystem
   cv2.imwrite(firstPlant+"_"+str(firstScore)+"_"+secondPlant+"_"+str(secondScore)+"_"+crop_name,crop_image)
   return returnPlant,returnScore
-def orientToSun(tiltVal,rollVal):
+def orientToSun():
   # The purpose of this is to fine adjust orientation so the target array is pointed directly at the xTarget yTarget coordinates
   # It assumes coarse orientation ( via sunTracker ) is already done so bright spots in targeting array are in camera view
   # It works by finding the bright spots of the "target array" and then tries to center target x and y on that.
+  global tiltVal, swingVal, lidVal, rollVal, swing, tilt, roll, lid
   centered = 0 #are bright spots centered on center x y?
   focused = 0 #is the span of bright spots small enough (focused?)
   orientToSunCount = 0 #counts attmpts to center bright spots
@@ -277,9 +284,9 @@ def orientToSun(tiltVal,rollVal):
   previousZAxisDir = "up"
   while orientToSunCount < 6 and focused == 0 and focusAttempts < 10:
     #snapshot from camera. assumes we're already in correct directory
-    img_name,image,camheight,camwidth = takePhoto("center")
-    print("Working on image: ",img_name)
-    drawtext(10,10,"Image dimensions are: "+str(int(camheight))+", "+str(int(camcamwidth)),image)
+    img_name,image,camheight,camwidth,ident = takePhoto("center")
+    print("Working on image: ",img_name,flush=True)
+    drawtext(10,10,"Image dimensions are: "+str(int(camheight))+", "+str(int(camwidth)),image)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) #color to gray
     gray_equ = cv2.equalizeHist(gray) #equalize it to spread out histogram of intensity more evenly
     blurred = cv2.GaussianBlur(gray_equ, (21, 21), 0) #blur it a bit
@@ -384,10 +391,10 @@ def orientToSun(tiltVal,rollVal):
           addText = "Xadjust: "+str(Xadjust)+" Yadjust: "+str(Yadjust)+" centerX: "+str(int(centerSpot[0]))+" centerY: "+str(int(centerSpot[1]))+"new roll: "+str(rollVal)+"new tilt: "+str(tiltVal)
           drawtext(10,150,addText,image)
           if abs(rollVal - initialRoll) > 60:
-            print("Moved greater than 60 degrees roll from initial value entering orientToSun. Ending")
+            print("Moved greater than 60 degrees roll from initial value entering orientToSun. Ending", flush=True)
             orientToSunCount = orientToSunCount + 100
           if abs(tiltVal - initialTilt) > 60:
-            print("Moved greater than 60 degrees tilt from initial value entering orientToSun. Ending")
+            print("Moved greater than 60 degrees tilt from initial value entering orientToSun. Ending", flush=True)
             orientToSunCount = orientToSunCount + 100
     if focused == 0 and centered == 1:
       #we centered the bright spots. now move up/down until they're focused (in a small circle of light)
@@ -424,11 +431,13 @@ def orientToSun(tiltVal,rollVal):
               previousZAxisDir = "up"
       addText = "bright Span: " + str(brightSpan) + " previousFocusSpan: " + str(previousFocusSpan) + " previousZAxisDir " + str(previousZAxisDir)
       drawtext(10,170,addText,image)
+      print("roll: ",rollVal," tilt: ",tiltVal," swing: ",swingVal,flush=True)
       previousFocusSpan[0] = brightSpan[0]; previousFocusSpan[1] = brightSpan[1]
     #write out the image to filesystem
     cv2.imwrite(img_name,image)
-  return tiltVal,rollVal,centered,focused
-def moveToWeed(x,swingVal,rollVal,tiltVal):
+  return centered,focused
+def moveToWeed(x):
+  swingKillVal=0;tiltKillVal=0;rollKillVal=0;
   # The purpose of this module is to calculate the "best guess" motor values (roll, tilt, swing)
   # values to center the targeting array over an identified weed given that weeds coordinates in x y photo grid
   # theory - if sun is directly overhead (roll/tilt are centered) then no adjusts are needed, just move swing
@@ -438,12 +447,13 @@ def moveToWeed(x,swingVal,rollVal,tiltVal):
     #  if rolled right (+) and swing left (+), must tilt up (+), roll less (a bit left (-)). if rolled left (-) and swing left (+), must tilt down (-), roll less (a bit right (+)).
     #  if tilted up (+), and swing left (+), then roll left (-), tilt less (down a bit (-)).  If tilted down (-), and swing left (+), then roll right (+), tilt less (a bit up (+)).
     #Assume we're already adjusted in Z direction (focused), don't think any of these moves change the focal length, so no need to go up/down
-  swingVal=moveMotor(swing,swingVal,swingVal+(3-x)*29) #move left when x is 0,1,2 b/c + adjust = move left.  move right (towards swing = 0 degrees) for 4,5,6. No change for 3.
+  swingKillVal=moveMotor(swing,swingVal,swingVal+(3-x)*29) #move left when x is 0,1,2 b/c + adjust = move left.  move right (towards swing = 0 degrees) for 4,5,6. No change for 3.
   rollAdjust = -(((rollVal - 90) * (3-x)) / 10) - (((tiltVal - 90) * (3-x)) / 10)
   tiltAdjust = (((rollVal - 90) * (3-x)) / 10) + (((tiltVal - 90) * (3-x)) / 10)
-  print("Moving to weed. SwingVal: "+str(swingVal+(3-x)*29)+" rollAdjust: "+str(rollAdjust)+" rollVal: ",str(rollVal)+" tiltAdjust: "+str(tiltAdjust)+" tiltVal: "+str(tiltVal))
-  rollVal=moveMotor(roll,rollVal,rollVal+int(rollAdjust))
-  tiltVal=moveMotor(tilt,tiltVal,tiltVal+int(tiltAdjust))
+  print("Moving to weed. SwingVal: "+str(swingVal+(3-x)*29)+" rollAdjust: "+str(rollAdjust)+" rollVal: ",str(rollVal)+" tiltAdjust: "+str(tiltAdjust)+" tiltVal: "+str(tiltVal), flush=True)
+  rollKillVal=moveMotor(roll,rollVal,rollVal+int(rollAdjust))
+  tiltKillVal=moveMotor(tilt,tiltVal,tiltVal+int(tiltAdjust))
+  print("Move to weed compelte",flush=True)
   #rollAdjust = 0; tiltAdjust = 0; #start assuming no adjust and calculate any adjusts below
   #if 3-x < 0:
   #  #swing right
@@ -473,26 +483,31 @@ def moveToWeed(x,swingVal,rollVal,tiltVal):
   #    #tilted down
   #    rollAdjust = -(((tiltVal - 90) * (3-x)) / 10) + rollAdjust
   #    tiltAdjust = (((tiltVal - 90) * (3-x)) / 10) + tiltAdjust
-  return swingVal,rollVal,tiltVal
-def killWeed(swingVal,lidVal):
+  return swingKillVal,rollKillVal,tiltKillVal
+def killWeed(swingKillVal,ident):
+  global tiltVal, swingVal, lidVal, rollVal, swing, tilt, roll, lid
   # We're oriented, open the lid and wiggle around to kill the weed
+  print("taking photo before killing weed, prepend is: kill_",str(ident),flush=True)
+  takePhoto("kill_"+str(ident))
+  print("opening lid to kill weed, then moving over it",flush=True)
   lidVal=moveMotor(lid,lidVal,0)
   for s in [10,10,10,-30]:
     #adjust swing by 10 degrees + (total of 30) then back 30 to the original value
-    swingVal=moveMotor(swing,swingVal,swingVal+s)
-    robot.forward(.25); time.sleep(2); robot.stop(); #go forward
-    zaxis.forward(.25); time.sleep(2); zaxis.stop(); #go up
-    robot.backward(.25); time.sleep(2); robot.stop() #go backward
-    zaxis.backward(.25); time.sleep(2); zaxis.stop(); #go down
+    swingKillVal=moveMotor(swing,swingKillVal,swingKillVal+s)
+    robot.forward(.25); time.sleep(1.25); robot.stop(); time.sleep(6); robot.forward(.25); time.sleep(1.25); robot.stop(); time.sleep(6) #go forward
+    #zaxis.forward(.25); time.sleep(2); zaxis.stop(); time.sleep(2) #go up
+    robot.backward(.25); time.sleep(1.25); robot.stop(); time.sleep(6); robot.backward(.25); time.sleep(1.25); robot.stop(); time.slee6(4) #go backward
+    #zaxis.backward(.25); time.sleep(2); zaxis.stop(); time.sleep(2) #go down
+  print("kill weed complete, putting down lid",flush=True)
   lidVal=moveMotor(lid,lidVal,180) #close the lid.
 def findAWeed(weedArray):
-  weedX=-1
+  weedX=[]
   #take a photo, search it for weeds in the reachable quadrants. When you find a weed, send back the X value
   #you can only see photos in a single Y line  (2,0) (3,1) (3,2) (3,3) (3,4) (3,5) (2,6)
-  search_filename,search_image,camheight,camwidth = takePhoto("search_")
-  print("Analyzing photo: ",search_filename)
+  search_filename,search_image,camheight,camwidth,ident = takePhoto("search_")
+  print("Analyzing photo: ",search_filename,flush=True)
   crop_size=224
-  XYSearchPattern = [[3,3],[2,3],[4,3],[5,3],[1,3],[6,4],[0,4]]
+  XYSearchPattern = [[3,2],[2,2],[4,2],[5,2],[1,2],[6,1],[0,1]]
   for searchIndex in range(len(XYSearchPattern)):
     #note cv2 crop function works image[y:y+h,x:x+i]
     cropped_image=search_image[int(XYSearchPattern[searchIndex][1]*crop_size):int((XYSearchPattern[searchIndex][1]+1)*crop_size),int(XYSearchPattern[searchIndex][0]*crop_size):int((XYSearchPattern[searchIndex][0]+1)*crop_size)]
@@ -502,15 +517,17 @@ def findAWeed(weedArray):
     cv2.imwrite(cropped_filename,cropped_image)
     print("cropped filename: "+cropped_filename)
     for weed in weedArray:
-      if plant_name == weed and score > 0.5:
+      if plant_name == weed and score > 0.6:
         #found a weed in this location
-        weedX = searchIndex
-  return weedX
+        weedX.append(searchIndex)
+  return weedX,ident
 
-def runWeeder(swingVal,rollVal,tiltVal,lidVal,mode,width,length,weeds):
+def runWeeder(mode,width,length,weeds,angleMv):
+  sunTracked=0
+  global tiltVal, swingVal, lidVal, rollVal, swing, tilt, roll, lid
   #don't bother returning values. they shoudl all be neutral when we return from this
   if mode.startswith("test") and mode != "test-full":
-    print("starting basic motor test")
+    print("starting basic motor test",flush=True)
     if mode == "test-wheel":
       robot.forward(.5); time.sleep(2); robot.backward(.5); time.sleep(2); robot.right(.5); time.sleep(2); robot.left(.5); time.sleep(2); robot.stop()
     if mode == "test-zaxis":
@@ -524,8 +541,13 @@ def runWeeder(swingVal,rollVal,tiltVal,lidVal,mode,width,length,weeds):
     if mode == "test-swing":
       swingVal=moveMotor(swing,swingVal,180); swingVal=moveMotor(swing,swingVal,0); swingVal=moveMotor(swing,swingVal,90)
     if mode == "test-suntracker":
-      tiltVal,rollVal=sunTracker(tiltVal,rollVal)
-    print("done"); return; #exit so we only test individual exercise while tuning
+      sunTracked=sunTracker()
+      print("sunTracked is: ",sunTracked)
+    if mode == "test-mv-tilt":
+      tiltVal=moveMotor(tilt,tiltVal,angleMv)
+    if mode == "test-mv-roll":
+      rollVal=moveMotor(roll,rollVal,angleMv)
+    print("done with test",flush=True); return; #exit so we only test individual exercise while tuning
 
   if mode == "test-full":
     print("starting full movements")
@@ -542,7 +564,7 @@ def runWeeder(swingVal,rollVal,tiltVal,lidVal,mode,width,length,weeds):
           for l in [0,180]:
             lidVal=moveMotor(lid,lidVal,l)
     zaxis.backward(0.25); time.sleep(0.5); zaxis.stop();
-    print("done"); return;
+    print("done with full motor test",flush=True); return;
 
   if mode == "photo":
     print("Taking a photo at 90 degrees (neutral)")
@@ -555,21 +577,38 @@ def runWeeder(swingVal,rollVal,tiltVal,lidVal,mode,width,length,weeds):
     takePhoto("testing_0")
     swingVal=moveMotor(swing,swingVal,90)
     picam.close()
-    print("done"); return;
+    print("done taking photos",flush=True); return;
+
+  if mode == "orient":
+    print("starting orient to sun process",flush=True)
+    sunTracked = 0; centered = 0; focused = 0; #assume not oriented to start
+    sunTracked=sunTracker()
+    centered,focused=orientToSun()
+    if sunTracked == 0:
+      print("unable to light up all 4 quadrants of sun tracker in 50 tries, exiting",flush=True)
+    if centered == 0:
+      print("Unable to center bright target spots under lens in attempts allowed. Since sun is not centered and focused under the weeder, quitting")
+      print("You can restart the program to reattempt orienting. Please place weeder on flat, level ground (no terrain changes under lens) to calibrate")
+      print("If the sun is too low in the sky or if bright target spots can't be seen by the weeder camera, calibration will fail and weeder won't start",flush=True)
+    if focused == 0:
+      print("Target bright spots under the lens are centered in the middle of the camera image, but were not focused properly in the time allowed",flush=True)
+      print("Attempting to weed anyway, but if the lens is too unfocused (the wrong distance off of the ground) the sun will not be focused enough to kill weeds")
+      print("If this is the case and the sun is not low in the sky, you can manually change the weeder height and restart.")
+      print("If the sun is low, weeder will not run properly, you should wait until sun is once again high enough to operate and focus",flush=True)
+    print("initial orientation done, neutralSwing: ",swingVal," neutralTilt: ",tiltVal," neutralRoll: ",rollVal,flush=True)
+    return;
 
   lengthTraveled=0
   widthTraveled=0
   previousDirectionTurned="left"
   if mode == "capture":
-    print("Running capture ground photos loop. Starting sun tracker first")
-    tiltVal,rollVal=sunTracker(tiltVal,rollVal)
-    print("stopping sun tracker")
+    print("Running capture ground photos loop")
     while widthTraveled < int(width):
       widthTraveled = widthTraveled + 1
       while lengthTraveled < int(length):
-        lengthTraveled = lengthTraveled + 1/6
+        lengthTraveled = lengthTraveled + 1/3
         takePhoto("model")
-        robot.forward(.5); time.sleep(1); robot.stop(); time.sleep(0.5)
+        robot.forward(.5); time.sleep(4); robot.stop(); time.sleep(0.5)
       if previousDirectionTurned == "left":
         robot.right(.5); time.sleep(5); robot.stop(); time.sleep(0.1); robot.forward(.5); time.sleep(5); robot.right(.5); time.sleep(5); robot.stop();
         previousDirectionTurned="right"
@@ -578,58 +617,47 @@ def runWeeder(swingVal,rollVal,tiltVal,lidVal,mode,width,length,weeds):
         previousDirectionTurned="left"
       print("end of row of length ",str(lengthTraveled)," reached. Turned and now making pass ",widthTraveled," of ",width)
       lengthTraveled = 0
+      #reverse direction of swing/tilt since we're 180 turned
+      swingVal=moveMotor(swing,swingVal,90+(90-swingVal)) #i.e. if swing is 100 90-100 is -10.  90+(-10)=80. 
+      tiltVal=moveMotor(tilt,tiltVal,90+(90-tiltVal))
     picam.close()
-    print("done"); return;
+    print("done",flush=True); return;
 
   if mode == "run":
-    print("Running weeder program to kill weeds. Starting sun orientation")
-    tiltVal,rollVal=sunTracker(tiltVal,rollVal)
-    tiltVal,rollVal,centered,focused=orientToSun(tiltVal,rollVal)
-    #centered = 1; focused = 1 #cheat around actual orientation
-    if centered == 0:
-      print("Unable to center bright target spots under lens in attempts allowed. Since sun is not centered and focused under the weeder, quitting")
-      print("You can restart the program to reattempt orienting. Please place weeder on flat, level ground (no terrain changes under lens) to calibrate")
-      print("If the sun is too low in the sky or if bright target spots can't be seen by the weeder camera, calibration will fail and weeder won't start")
-      return 
-    if focused == 0:
-      print("Target bright spots under the lens are centered in the middle of the camera image, but were not focused properly in the time allowed")
-      print("Attempting to weed anyway, but if the lens is too unfocused (the wrong distance off of the ground) the sun will not be focused enough to kill weeds")
-      print("If this is the case and the sun is not low in the sky, you can manually change the weeder height and restart.")
-      print("If the sun is low, weeder will not run properly, you should wait until sun is once again high enough to operate and focus")
-    print("initial orientation done, neutralSwing: ",swingVal," neutralTilt: ",tiltVal," neutralRoll: ",rollVal)
+    print("Running weeder program to kill weeds.")
     while widthTraveled < int(width):
       widthTraveled = widthTraveled + 1
       while lengthTraveled < int(length):
         lengthTraveled = lengthTraveled + 1/6
-        weedX = findAWeed(weeds)
-        weedX = -1
-        if weedX > -1:
-          #found a weed, weedX contains the X coordinate of the weed in the most recent photo
-          swingKillVal,rollKillVal,tiltKillVal = moveToWeed(weedX,swingVal,rollVal,tiltVal) #move the motors to orient to the weed at the found X
-          killWeed(swingKillVal,lidVal) #raise the lid and wiggle around
-          #reset to neutral after killing weed
-          swingVal = moveMotor(swing,swingKillVal,90)
-          tiltVal = moveMotor(tilt,tiltKillVal,90)
-          rollVal = moveMotor(roll,rollKillVal,90)
+        weedX = []
+        weedX,ident = findAWeed(weeds)
+        if len(weedX) > 1:
+          for killX in weedX:
+            #found a weed, weedX contains the X coordinate of the weed in the most recent photo
+            swingKillVal,rollKillVal,tiltKillVal = moveToWeed(killX) #move the motors to orient to the weed at the found X
+            killWeed(swingKillVal,str(ident)+"_"+str(killX)+"_") #raise the lid and wiggle around
+            #reset to neutral after killing weed
+            swingVal = moveMotor(swing,swingKillVal,swingVal)
+            tiltVal = moveMotor(tilt,tiltKillVal,tiltVal)
+            rollVal = moveMotor(roll,rollKillVal,rollVal)
         robot.forward(.5); time.sleep(1); robot.stop(); time.sleep(0.5) #drive forward and start the loop over
-      if previousDirectionTurned == "left":
-        robot.right(.5); time.sleep(5); robot.stop(); time.sleep(0.1); robot.forward(.5); time.sleep(5); robot.right(.5); time.sleep(5); robot.stop();
-        previousDirectionTurned="right"
-      else:
-        robot.left(.5); time.sleep(5); robot.stop(); time.sleep(0.1); robot.forward(.5); time.sleep(5); robot.left(.5); time.sleep(5); robot.stop();
-        previousDirectionTurned="left"
-      print("end of row of length ",str(lengthTraveled)," reached. Turned and now making pass ",widthTraveled," of ",width)
+#      if previousDirectionTurned == "left":
+#        robot.right(.5); time.sleep(5); robot.stop(); time.sleep(0.1); robot.forward(.5); time.sleep(5); robot.right(.5); time.sleep(5); robot.stop();
+#        previousDirectionTurned="right"
+#      else:
+#        robot.left(.5); time.sleep(5); robot.stop(); time.sleep(0.1); robot.forward(.5); time.sleep(5); robot.left(.5); time.sleep(5); robot.stop();
+#        previousDirectionTurned="left"
+      print("end of row of length ",str(lengthTraveled)," reached. Turned and now making pass ",widthTraveled," of ",width,flush=True)
       lengthTraveled = 0
+      #reverse direction of swing/tilt since we're 180 turned
+#      swingVal=moveMotor(swing,swingVal,90+(90-swingVal)) #i.e. if swing is 100 90-100 is -10.  90+(-10)=80.
+#      tiltVal=moveMotor(tilt,tiltVal,90+(90-tiltVal))
     picam.close()
-    print("done");
+    print("done",flush=True);
+    return;
 
-#ppid = os.getppid() # Get parent process id
-#parentCaller = psutil.Process(ppid).name()
-#print(parentCaller)
-#exit()
-#if parentCaller == "bash":
-#  runWeeder(swingVal,rollVal,tiltVal,lidVal)
-
+#if(args.flask == "flask"):
+#Flask stuff - make this accessible and controlled via web app
 SECRET_KEY = 'weederkey'
 app = Flask(__name__)
 app = Flask(__name__)
@@ -640,10 +668,11 @@ class MultiCheckboxField(SelectMultipleField):
     widget = widgets.ListWidget(prefix_label=False)
     option_widget = widgets.CheckboxInput()
 class weederForm(FlaskForm):
-    runType = RadioField('Run Type', choices=[('run','Normal Run'),('capture','Capture Photos to Build Model'),('photo','Test Take a Photo'),('test-full','Test All Mtors'),('test-swing','Test Swing Motor'),('test-tilt','Test Tilt Motor'),('test-roll','Test Roll Motor'),('test-lid','Test Lid Motor'),('test-zaxis','Test Zaxis Motors'),('test-wheel','Test Wheels'),('test-suntracker','Test Suntracker Array')], default='run', coerce=str, validators=[InputRequired()])
-    weedType = MultiCheckboxField('Label', choices=[('c','Creeping Charlie'),('l','Leaf')], default='l')
+    runType = RadioField('Run Type', choices=[('run','Normal Run'),('orient','Orient To Sun - run before starting normal run or capture run and check orientation/focus visually'),('capture','Capture Photos to Build Model'),('photo','Test Take a Photo'),('test-full','Test All Mtors'),('test-swing','Test Swing Motor'),('test-tilt','Test Tilt Motor'),('test-roll','Test Roll Motor'),('test-lid','Test Lid Motor'),('test-zaxis','Test Zaxis Motors'),('test-wheel','Test Wheels'),('test-suntracker','Test Suntracker Array'),('test-mv-tilt','Move Tilt Motor (degrees)'),('test-mv-roll','Move Roll Motor (degrees)')], default='run', coerce=str, validators=[InputRequired()])
+    weedType = MultiCheckboxField('Label', choices=[('d','Dandelion'),('c','Creeping Charlie'),('l','Leaf')], default='l')
     distance = IntegerField('distance', default=10)
     rows = IntegerField('rows', default=1)
+    angleMv = IntegerField('Motor Move Angle', default=0)
 
 @app.route('/run',methods=['post','get'])
 def run():
@@ -653,7 +682,8 @@ def run():
     print(form.weedType.data)
     print(form.distance.data)
     print(form.rows.data)
-    runWeeder(swingVal,rollVal,tiltVal,lidVal,form.runType.data,form.rows.data,form.distance.data,form.weedType.data)
+    print(form.angleMv.data)
+    runWeeder(form.runType.data,form.rows.data,form.distance.data,form.weedType.data,form.angleMv.data)
   else:
     print(form.errors)
   return render_template('runType.html',form=form)
@@ -661,3 +691,5 @@ def run():
 if __name__ == '__main__':
   app.run(debug=True)
 
+#if(args.flask == "cmd"):
+#  runWeeder(args.mode,args.width,args.length,weedArray) #single shot run from cmd line
